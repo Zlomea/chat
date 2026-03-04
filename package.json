@@ -1,11 +1,8 @@
 {
-  "name": "ostagarm",
+  "name": "bloom-chat",
   "version": "1.0.0",
-  "description": "Ostagarm — Real-time chat app",
+  "description": "Bloom — A beautiful real-time messaging app",
   "main": "server.js",
-  "engines": {
-    "node": ">=18.0.0"
-  },
   "scripts": {
     "start": "node server.js",
     "dev": "node server.js"
