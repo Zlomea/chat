@@ -586,6 +586,8 @@ function initSocket() {
   socket.on('message:new', (msg) => {
     const isCurrentChat = currentConvId === msg.conv_id;
     const previewText = msg.type === 'text' ? msg.text : msg.type === 'image' ? '🖼️ Image' : '🎥 Video';
+    // Always cache the sender's name so we can display it even before loadConversations runs
+    if (msg.sender_id && msg.sender_name) userNameCache[msg.sender_id] = msg.sender_name;
 
     // Step 1: append message to open chat immediately — no awaits, no delays
     if (isCurrentChat) {
@@ -607,7 +609,20 @@ function initSocket() {
         if (list.firstChild !== convEl) list.prepend(convEl);
       }
     } else {
-      // Unknown conv (new DM/group) — fetch in background, don't block
+      // Unknown conv — inject a placeholder immediately so sidebar shows it right away
+      userNameCache[msg.sender_id] = userNameCache[msg.sender_id] || msg.sender_name;
+      convCache[msg.conv_id] = {
+        id: msg.conv_id,
+        type: 'dm',
+        members: [me.id, msg.sender_id],
+        other_name: msg.sender_name || userNameCache[msg.sender_id] || 'Unknown',
+        name: msg.sender_name || userNameCache[msg.sender_id] || 'Unknown',
+        last_message: previewText,
+        last_message_at: msg.created_at || Date.now(),
+        _pending: true, // flag: real data not yet loaded
+      };
+      renderConvList(); // show it in sidebar immediately
+      // Then fetch real data in background to get correct other_name/members
       loadConversations();
     }
 
@@ -715,10 +730,14 @@ function renderConvList(filter='', glowSet=new Set()) {
 
 function filterConvs(v) { renderConvList(v); }
 
+// Cache of userId -> name resolved from received messages
+const userNameCache = {};
+
 function getConvDisplayName(c) {
   if(c.type==='group') return c.name||'Group';
   const otherId=(c.members||[]).find(m=>m!==me.id);
-  return c.other_name||c.name||otherId||'Unknown';
+  // other_name comes from server; fall back to userNameCache populated from messages
+  return c.other_name || c.name || (otherId && userNameCache[otherId]) || otherId || 'Unknown';
 }
 
 function updateOnlineUI() {
@@ -786,7 +805,13 @@ async function openConv(convId) {
   document.getElementById('chatPanel').classList.remove('group-view');
   if(isGroup) document.getElementById('chatPanel').classList.add('group-view');
 
-  const msgs=await apiFetch(`/api/messages/${convId}`);
+  let msgs = await apiFetch(`/api/messages/${convId}`);
+  // If we got no messages but the conv has a last_message preview (meaning messages exist),
+  // retry once after a short delay — handles the non-blocking saveDB race
+  if ((!msgs || !msgs.length) && convCache[convId]?.last_message) {
+    await new Promise(r => setTimeout(r, 400));
+    msgs = await apiFetch(`/api/messages/${convId}`);
+  }
   container.innerHTML='';
 
   if(!msgs?.length) {
