@@ -58,9 +58,16 @@ async function initDB() {
   console.log('✅ DB ready');
 }
 
+// Non-blocking save — deferred so io.emit() always fires before disk I/O
+let _saveScheduled = false;
 function saveDB() {
-  try { fs.writeFileSync(DB_PATH, Buffer.from(db.export())); }
-  catch (e) { console.error('DB save error:', e.message); }
+  if (_saveScheduled) return;
+  _saveScheduled = true;
+  setImmediate(() => {
+    _saveScheduled = false;
+    try { fs.writeFileSync(DB_PATH, Buffer.from(db.export())); }
+    catch (e) { console.error('DB save error:', e.message); }
+  });
 }
 
 // ─── DB helpers ───────────────────────────────────────────────────────────────
@@ -297,17 +304,11 @@ io.on('connection', (socket) => {
     const msgId  = genId();   // ← uses genId(), no collision
     const now    = Date.now();
 
+    // Validate type
     if (type === 'text') {
       if (!text?.trim()) return;
-      dbRun(
-        'INSERT INTO messages (id,conv_id,sender_id,type,text,created_at) VALUES (?,?,?,?,?,?)',
-        [msgId, convId, userId, 'text', text.trim(), now]
-      );
     } else if ((type === 'image' || type === 'video') && url) {
-      dbRun(
-        'INSERT INTO messages (id,conv_id,sender_id,type,url,created_at) VALUES (?,?,?,?,?,?)',
-        [msgId, convId, userId, type, url, now]
-      );
+      // valid
     } else return;
 
     const msg = {
@@ -317,13 +318,23 @@ io.on('connection', (socket) => {
       sender_name: sender?.name || 'Unknown',
       type,
       text: type === 'text' ? text.trim() : null,
-      url: url || null,
+      url: (type !== 'text') ? url : null,
       deleted: false,
       edited: false,
       created_at: now,
     };
 
-    io.to(convId).emit('message:new', msg);   // ← broadcasts to everyone in room including sender
+    // Broadcast FIRST — never let disk I/O delay the message appearing
+    io.to(convId).emit('message:new', msg);
+
+    // Then persist (saveDB is non-blocking so this returns instantly)
+    if (type === 'text') {
+      dbRun('INSERT INTO messages (id,conv_id,sender_id,type,text,created_at) VALUES (?,?,?,?,?,?)',
+        [msgId, convId, userId, 'text', text.trim(), now]);
+    } else {
+      dbRun('INSERT INTO messages (id,conv_id,sender_id,type,url,created_at) VALUES (?,?,?,?,?,?)',
+        [msgId, convId, userId, type, url, now]);
+    }
   });
 
   socket.on('typing:start', ({ convId }) => {

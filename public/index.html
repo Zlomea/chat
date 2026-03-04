@@ -570,43 +570,52 @@ function updateFooter() {
 function initSocket() {
   socket=io({auth:{token},reconnectionDelay:1000,reconnectionAttempts:10});
 
+  let _initialConnect = true;
   socket.on('connect', async () => {
-    console.log('socket connected:', socket.id);
-    // Re-join current conv room after reconnect
-    if(currentConvId) socket.emit('join:conv', currentConvId);
+    // Always rejoin the current room immediately (critical after reconnect)
+    if (currentConvId) socket.emit('join:conv', currentConvId);
+    // Skip on first connect — bootApp() already calls loadConversations()
+    // On reconnect, refresh the conversation list silently
+    if (_initialConnect) { _initialConnect = false; return; }
     await loadConversations();
   });
 
-  socket.on('message:new', async (msg) => {
-    console.log('message:new received', msg);
-
-    // If conv not in cache yet (new DM / added to group), fetch first
-    if(!convCache[msg.conv_id]) await loadConversations();
-
+  socket.on('message:new', (msg) => {
     const isCurrentChat = currentConvId === msg.conv_id;
+    const previewText = msg.type === 'text' ? msg.text : msg.type === 'image' ? '🖼️ Image' : '🎥 Video';
 
-    // Show notification for messages from others
-    if(msg.sender_id !== me.id) {
-      const conv=convCache[msg.conv_id];
-      showTopNotif(msg.sender_name, msg.type==='text'?msg.text:msg.type==='image'?'🖼️ Image':'🎥 Video', conv?getConvDisplayName(conv):null, msg.conv_id);
-      if(!isCurrentChat) {
-        const el=document.querySelector(`[data-cid="${msg.conv_id}"]`);
-        if(el) el.classList.add('unread-glow');
-      }
-    }
-
-    // ── FIX: always append if this is the current chat, regardless of sender ──
-    if(isCurrentChat) {
+    // Step 1: append message to open chat immediately — no awaits, no delays
+    if (isCurrentChat) {
       appendMessage(msg);
       scrollBottom();
     }
 
-    // Update sidebar preview and re-sort
-    if(convCache[msg.conv_id]) {
-      convCache[msg.conv_id].last_message = msg.type==='text' ? msg.text : msg.type==='image' ? '🖼️ Image' : '🎥 Video';
+    // Step 2: update sidebar preview in-place (no re-render of whole list)
+    if (convCache[msg.conv_id]) {
+      convCache[msg.conv_id].last_message = previewText;
       convCache[msg.conv_id].last_message_at = msg.created_at || Date.now();
+      const convEl = document.querySelector(`[data-cid="${msg.conv_id}"]`);
+      if (convEl) {
+        const preview = convEl.querySelector('.conv-preview');
+        if (preview) preview.textContent = previewText;
+        // Move to top of sidebar without rebuilding anything
+        const list = document.getElementById('convList');
+        if (list.firstChild !== convEl) list.prepend(convEl);
+      }
+    } else {
+      // Unknown conv (new DM/group) — fetch in background, don't block
+      loadConversations();
     }
-    renderConvList();
+
+    // Step 3: notification + unread glow for messages from others
+    if (msg.sender_id !== me.id) {
+      const conv = convCache[msg.conv_id];
+      showTopNotif(msg.sender_name, previewText, conv ? getConvDisplayName(conv) : null, msg.conv_id);
+      if (!isCurrentChat) {
+        const convEl = document.querySelector(`[data-cid="${msg.conv_id}"]`);
+        if (convEl) convEl.classList.add('unread-glow');
+      }
+    }
   });
 
   socket.on('message:updated', (msg) => {
