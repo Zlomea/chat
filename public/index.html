@@ -574,6 +574,9 @@ function initSocket() {
   socket.on('connect', async () => {
     // Always rejoin the current room immediately (critical after reconnect)
     if (currentConvId) socket.emit('join:conv', currentConvId);
+    // Reset stale typing state from before disconnect
+    typingUsers = {};
+    hideTyping();
     // Skip on first connect — bootApp() already calls loadConversations()
     // On reconnect, refresh the conversation list silently
     if (_initialConnect) { _initialConnect = false; return; }
@@ -586,6 +589,7 @@ function initSocket() {
 
     // Step 1: append message to open chat immediately — no awaits, no delays
     if (isCurrentChat) {
+      hideTyping(); // clear typing dots before appending the real message
       appendMessage(msg);
       scrollBottom();
     }
@@ -628,12 +632,16 @@ function initSocket() {
   socket.on('user:online',({uid,online})=>{ if(online) onlineSet.add(uid); else onlineSet.delete(uid); updateOnlineUI(); });
 
   socket.on('typing:start',({uid,name,convId})=>{
-    if(convId!==currentConvId||uid===me.id) return;
+    // Only show for the currently open conversation, and never for yourself
+    if(convId!==currentConvId || uid===me.id) return;
     if(!typingUsers[convId]) typingUsers[convId]=new Set();
-    typingUsers[convId].add(uid); showTyping();
+    typingUsers[convId].add(uid);
+    showTyping(name);
   });
 
   socket.on('typing:stop',({uid,convId})=>{
+    // Guard: only act on the current conversation
+    if(convId!==currentConvId) return;
     if(typingUsers[convId]) typingUsers[convId].delete(uid);
     if(!typingUsers[convId]?.size) hideTyping();
   });
@@ -738,6 +746,7 @@ async function openConv(convId) {
   currentConvData=convCache[convId];
   cancelEdit();
   hideTyping();
+  typingUsers = {}; // reset all typing state when switching convs
 
   // Mobile slide
   document.getElementById('sidebar').classList.remove('open');
@@ -921,14 +930,23 @@ async function deleteMsg(id) { await apiFetch(`/api/messages/${id}`,'DELETE'); }
 
 // ── Typing indicator ───────────────────────────
 let typingEl=null;
-function showTyping() {
-  if(typingEl) return;
+function showTyping(name) {
+  // Update name label if already showing
+  if(typingEl) {
+    const label = typingEl.querySelector('.typing-name');
+    if(label && name) label.textContent = name + ' is typing';
+    return;
+  }
   typingEl=document.createElement('div');
   typingEl.className='msg-wrap recv typing-wrap';
   typingEl.id='typingIndicator';
-  typingEl.innerHTML=`<div class="typing-bubble"><div class="t-dot"></div><div class="t-dot"></div><div class="t-dot"></div></div>`;
+  // Show name only in group chats
+  const isGroup = currentConvData?.type === 'group';
+  typingEl.innerHTML=`
+    ${isGroup && name ? `<div class="msg-sender typing-name">${esc(name)} is typing</div>` : ''}
+    <div class="typing-bubble"><div class="t-dot"></div><div class="t-dot"></div><div class="t-dot"></div></div>`;
   document.getElementById('msgsContainer').appendChild(typingEl);
-  scrollBottom();
+  scrollBottom(); // scroll so the dots are visible
 }
 function hideTyping() { if(typingEl){typingEl.remove();typingEl=null;} }
 

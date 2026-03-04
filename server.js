@@ -54,6 +54,30 @@ async function initDB() {
     created_at INTEGER DEFAULT (strftime('%s','now') * 1000)
   )`);
 
+  // ── Migration: drop sender_name column if it exists from old schema ──
+  // SQLite doesn't support DROP COLUMN before 3.35, so we recreate the table
+  try {
+    const cols = db.exec("PRAGMA table_info(messages)")[0];
+    if (cols) {
+      const hasOldCol = cols.values.some(row => row[1] === 'sender_name');
+      if (hasOldCol) {
+        console.log('⚠️  Migrating messages table: removing sender_name column...');
+        db.run(`CREATE TABLE IF NOT EXISTS messages_new (
+          id TEXT PRIMARY KEY, conv_id TEXT NOT NULL, sender_id TEXT NOT NULL,
+          type TEXT NOT NULL DEFAULT 'text', text TEXT, url TEXT,
+          deleted INTEGER DEFAULT 0, edited INTEGER DEFAULT 0,
+          created_at INTEGER DEFAULT (strftime('%s','now') * 1000)
+        )`);
+        db.run(`INSERT INTO messages_new (id,conv_id,sender_id,type,text,url,deleted,edited,created_at)
+                SELECT id,conv_id,sender_id,type,text,url,deleted,edited,created_at FROM messages`);
+        db.run(`DROP TABLE messages`);
+        db.run(`ALTER TABLE messages_new RENAME TO messages`);
+        saveDB();
+        console.log('✅ Migration complete');
+      }
+    }
+  } catch(e) { console.error('Migration error (non-fatal):', e.message); }
+
   setInterval(saveDB, 30_000);
   console.log('✅ DB ready');
 }
