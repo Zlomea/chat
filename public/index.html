@@ -1335,7 +1335,7 @@ function showTopNotif(senderName, text, convName, convId) {
   notifTimer = setTimeout(() => el.classList.remove('show'), 3500);
 }
 
-// ── Conversations ─────────────────────────────
+
 async function loadConversations() {
   const convs = await apiFetch('/api/conversations');
   if (!convs) return;
